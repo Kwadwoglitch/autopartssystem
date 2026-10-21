@@ -1,0 +1,124 @@
+{% extends "admin/base_site.html" %}
+
+{% block content %}
+<div style="max-width: 850px; margin: 20px auto;">
+
+    <p>
+        Select the completed invoice, explain the reason for the return,
+        and specify the item and quantity being returned.
+    </p>
+
+    <form method="post">
+        {% csrf_token %}
+
+        {% if form.non_field_errors %}
+            <div class="errornote">
+                {{ form.non_field_errors }}
+            </div>
+        {% endif %}
+
+        {% if item_form.non_field_errors %}
+            <div class="errornote">
+                {{ item_form.non_field_errors }}
+            </div>
+        {% endif %}
+
+        <fieldset class="module aligned">
+            <h2>Return Details</h2>
+            {{ form.as_p }}
+        </fieldset>
+
+        <fieldset class="module aligned">
+            <h2>Returned Item</h2>
+            {{ item_form.as_p }}
+        </fieldset>
+
+        <div class="submit-row">
+            <input type="submit" value="Record Return" class="default">
+            <a href="{% url 'admin:products_sale_changelist' %}"
+               class="closelink">Cancel</a>
+        </div>
+    </form>
+</div>
+
+<script>
+document.addEventListener("DOMContentLoaded", function () {
+    const saleSelect = document.getElementById("id_sale");
+    const itemSelect = document.getElementById("id_sale_item");
+
+    if (!saleSelect || !itemSelect) {
+        return;
+    }
+
+    const itemsUrl = "{% url 'admin:products_sale_return_items' %}";
+
+    async function loadSaleItems() {
+        const saleId = saleSelect.value;
+        const previouslySelected = itemSelect.value;
+
+        itemSelect.replaceChildren();
+        itemSelect.add(new Option(
+            saleId ? "Loading items..." : "Select an invoice first",
+            ""
+        ));
+
+        itemSelect.disabled = true;
+
+        if (!saleId) {
+            itemSelect.disabled = false;
+            return;
+        }
+
+        try {
+            const response = await fetch(
+                itemsUrl + "?sale_id=" + encodeURIComponent(saleId),
+                {
+                    headers: {"X-Requested-With": "XMLHttpRequest"}
+                }
+            );
+
+            if (!response.ok) {
+                throw new Error("Could not load invoice items.");
+            }
+
+            const data = await response.json();
+
+            itemSelect.replaceChildren();
+            itemSelect.add(new Option("Select an item", ""));
+
+            data.items.forEach(function (item) {
+                itemSelect.add(new Option(item.label, item.id));
+            });
+
+            if (data.items.some(
+                item => String(item.id) === previouslySelected
+            )) {
+                itemSelect.value = previouslySelected;
+            }
+
+            if (data.items.length === 0) {
+                itemSelect.replaceChildren();
+                itemSelect.add(new Option(
+                    "No items found for this invoice",
+                    ""
+                ));
+            }
+        } catch (error) {
+            itemSelect.replaceChildren();
+            itemSelect.add(new Option(
+                "Unable to load items. Change the invoice to try again.",
+                ""
+            ));
+        } finally {
+            itemSelect.disabled = false;
+        }
+    }
+
+    saleSelect.addEventListener("change", loadSaleItems);
+
+    if (saleSelect.value) {
+        loadSaleItems();
+    }
+});
+</script>
+{% endblock %}

@@ -1,0 +1,97 @@
+{% extends "admin/base_site.html" %}
+
+{% block content %}
+<div id="content-main">
+    <h1>Outstanding Invoices</h1>
+
+    <div class="module" style="padding: 16px; margin-bottom: 20px;">
+        <h2>Outstanding Summary</h2>
+
+        <p>
+            Outstanding invoices:
+            <strong>{{ outstanding_count }}</strong>
+        </p>
+
+        <p>
+            Total outstanding balance:
+            <strong>GH₵ {{ total_outstanding|floatformat:2 }}</strong>
+        </p>
+    </div>
+
+    <form method="get" style="margin-bottom: 20px;">
+        <label for="invoice-search">
+            Search by invoice number or customer:
+        </label>
+
+        <input
+            type="text"
+            id="invoice-search"
+            name="q"
+            value="{{ search_query }}"
+            placeholder="Enter invoice or customer"
+            style="padding: 8px; width: 280px;"
+        >
+
+        <button type="submit">Search</button>
+
+        {% if search_query %}
+            <a href="{% url 'admin:products_sale_outstanding' %}">
+                Clear search
+            </a>
+        {% endif %}
+    </form>
+
+    <table style="width: 100%; border-collapse: collapse;">
+        <thead>
+            <tr>
+                <th style="padding: 10px; text-align: left;">Invoice</th>
+                <th style="padding: 10px; text-align: left;">Customer</th>
+                <th style="padding: 10px; text-align: right;">Invoice Total</th>
+                <th style="padding: 10px; text-align: right;">Amount Paid</th>
+                <th style="padding: 10px; text-align: right;">Balance Due</th>
+                <th style="padding: 10px; text-align: center;">Action</th>
+            </tr>
+        </thead>
+
+        <tbody>
+            {% for sale in outstanding_sales %}
+                <tr>
+                    <td style="padding: 10px;">
+                        <a href="{% url 'admin:products_sale_change' sale.pk %}">
+                            {{ sale.invoice_number }}
+                        </a>
+                    </td>
+
+                    <td style="padding: 10px;">
+                        {{ sale.customer }}
+                    </td>
+
+                    <td style="padding: 10px; text-align: right;">
+                        GH₵ {{ sale.total_amount|floatformat:2 }}
+                    </td>
+
+                    <td style="padding: 10px; text-align: right;">
+                        GH₵ {{ sale.admin_amount_paid|floatformat:2 }}
+                    </td>
+
+                    <td style="padding: 10px; text-align: right;">
+                        GH₵ {{ sale.admin_balance_due|floatformat:2 }}
+                    </td>
+
+                    <td style="padding: 10px; text-align: center;">
+                        <a href="{% url 'admin:products_payment_record' %}?sale_id={{ sale.pk }}">
+                            Record Payment
+                        </a>
+                    </td>
+                </tr>
+            {% empty %}
+                <tr>
+                    <td colspan="6" style="padding: 10px; text-align: center;">
+                        No outstanding invoices match your search.
+                    </td>
+                </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+</div>
+{% endblock %}

@@ -1,0 +1,799 @@
+from django.contrib import admin
+
+from .models import (
+    Product,
+    Brand,
+    Category,
+    VehicleModel,
+    Supplier,
+    Purchase,
+    PurchaseItem,
+    InventoryTransaction,
+    Customer,
+    Sale,
+    SaleItem,
+    Payment,
+)
+
+from .services import receive_purchase, complete_sale
+
+from django import forms
+from django.contrib import admin, messages
+from django.core.exceptions import ValidationError
+from django.http import HttpResponseRedirect
+from django.shortcuts import render
+from django.urls import path, reverse
+
+from .forms import PaymentForm
+from .services import record_payment
+
+@admin.register(Brand)
+class BrandAdmin(admin.ModelAdmin):
+    list_display = ('name', 'created_at')
+    search_fields = ('name',)
+
+
+@admin.register(Category)
+class CategoryAdmin(admin.ModelAdmin):
+    list_display = ('name', 'created_at')
+    search_fields = ('name',)
+
+
+@admin.register(VehicleModel)
+class VehicleModelAdmin(admin.ModelAdmin):
+    list_display = (
+        'make',
+        'model',
+        'year_start',
+        'year_end',
+        'engine',
+        'fuel_type',
+        'transmission',
+    )
+
+    search_fields = (
+        'make',
+        'model',
+        'engine',
+        'fuel_type',
+        'transmission',
+    )
+
+    list_filter = (
+        'make',
+        'fuel_type',
+        'transmission',
+    )
+
+
+@admin.register(Supplier)
+class SupplierAdmin(admin.ModelAdmin):
+    list_display = (
+        'name',
+        'contact_person',
+        'phone',
+        'email',
+        'created_at',
+    )
+
+    search_fields = (
+        'name',
+        'contact_person',
+        'phone',
+        'email',
+    )
+
+
+@admin.register(Product)
+class ProductAdmin(admin.ModelAdmin):
+    list_display = (
+        'name',
+        'part_number',
+        'brand',
+        'category',
+        'selling_price',
+        'quantity',
+    )
+
+    search_fields = (
+        'name',
+        'part_number',
+        'barcode',
+        'brand__name',
+        'category__name',
+    )
+
+    list_filter = (
+        'brand',
+        'category',
+    )
+
+
+class PurchaseItemInline(admin.TabularInline):
+    model = PurchaseItem
+    extra = 1
+
+
+@admin.register(Purchase)
+class PurchaseAdmin(admin.ModelAdmin):
+    list_display = (
+        'id',
+        'supplier',
+        'invoice_number',
+        'purchase_date',
+        'status',
+        'created_at',
+    )
+
+    search_fields = (
+        'invoice_number',
+        'supplier__name',
+    )
+
+    list_filter = (
+        'status',
+        'supplier',
+        'purchase_date',
+    )
+
+    inlines = [PurchaseItemInline]
+    actions = ['receive_selected_purchases']
+
+    @admin.action(description='Receive selected purchases')
+    def receive_selected_purchases(self, request, queryset):
+        received_count = 0
+        error_count = 0
+
+        for purchase in queryset:
+            try:
+                receive_purchase(purchase)
+                received_count += 1
+
+            except ValueError as error:
+                error_count += 1
+                self.message_user(
+                    request,
+                    f'Purchase #{purchase.id}: {error}',
+                    level='error',
+                )
+
+        if received_count:
+            self.message_user(
+                request,
+                f'{received_count} purchase(s) received successfully.',
+            )
+
+        if error_count:
+            self.message_user(
+                request,
+                f'{error_count} purchase(s) could not be received.',
+                level='warning',
+            )
+
+
+@admin.register(PurchaseItem)
+class PurchaseItemAdmin(admin.ModelAdmin):
+    list_display = (
+        'purchase',
+        'product',
+        'quantity',
+        'unit_cost',
+    )
+
+    search_fields = (
+        'product__name',
+        'product__part_number',
+        'purchase__invoice_number',
+    )
+
+
+@admin.register(InventoryTransaction)
+class InventoryTransactionAdmin(admin.ModelAdmin):
+    list_display = (
+        'product',
+        'transaction_type',
+        'quantity',
+        'reference',
+        'created_at',
+    )
+
+    search_fields = (
+        'product__name',
+        'product__part_number',
+        'reference',
+    )
+
+    list_filter = (
+        'transaction_type',
+        'created_at',
+    )
+
+    readonly_fields = ('created_at',)
+
+
+@admin.register(Customer)
+class CustomerAdmin(admin.ModelAdmin):
+    list_display = (
+        'name',
+        'customer_type',
+        'phone',
+        'email',
+        'created_at',
+    )
+
+    search_fields = (
+        'name',
+        'phone',
+        'alternate_phone',
+        'email',
+    )
+
+    list_filter = (
+        'customer_type',
+        'created_at',
+    )
+
+    readonly_fields = (
+        'created_at',
+        'updated_at',
+    )
+
+
+class SaleItemInline(admin.TabularInline):
+    model = SaleItem
+    extra = 1
+
+
+@admin.register(Sale)
+class SaleAdmin(admin.ModelAdmin):
+    list_display = (
+        'invoice_number',
+        'customer',
+        'sale_date',
+        'status',
+        'payment_status',
+    )
+
+    search_fields = (
+        'invoice_number',
+        'customer__name',
+        'customer__phone',
+    )
+
+    list_filter = (
+        'status',
+        'payment_status',
+        'sale_date',
+    )
+
+    inlines = [SaleItemInline]
+    actions = ['complete_selected_sales']
+
+    @admin.action(description='Complete selected sales')
+    def complete_selected_sales(self, request, queryset):
+        completed_count = 0
+        error_count = 0
+
+        for sale in queryset:
+            try:
+                complete_sale(sale)
+                completed_count += 1
+
+            except ValueError as error:
+                error_count += 1
+                self.message_user(
+                    request,
+                    f'Sale {sale.invoice_number}: {error}',
+                    level='error',
+                )
+
+        if completed_count:
+            self.message_user(
+                request,
+                f'{completed_count} sale(s) completed successfully.',
+            )
+
+        if error_count:
+            self.message_user(
+                request,
+                f'{error_count} sale(s) could not be completed.',
+                level='warning',
+            )
+
+
+from django.contrib import admin
+
+from .models import (
+    Product,
+    Brand,
+    Category,
+    VehicleModel,
+    Supplier,
+    Purchase,
+    PurchaseItem,
+    InventoryTransaction,
+    Customer,
+    Sale,
+    SaleItem,
+    Payment,
+)
+
+from .services import receive_purchase, complete_sale
+
+from django import forms
+from django.contrib import admin, messages
+from django.core.exceptions import ValidationError
+from django.http import HttpResponseRedirect
+from django.shortcuts import render
+from django.urls import path, reverse
+
+from .forms import PaymentForm
+from .services import record_payment
+
+@admin.register(Brand)
+class BrandAdmin(admin.ModelAdmin):
+    list_display = ('name', 'created_at')
+    search_fields = ('name',)
+
+
+@admin.register(Category)
+class CategoryAdmin(admin.ModelAdmin):
+    list_display = ('name', 'created_at')
+    search_fields = ('name',)
+
+
+@admin.register(VehicleModel)
+class VehicleModelAdmin(admin.ModelAdmin):
+    list_display = (
+        'make',
+        'model',
+        'year_start',
+        'year_end',
+        'engine',
+        'fuel_type',
+        'transmission',
+    )
+
+    search_fields = (
+        'make',
+        'model',
+        'engine',
+        'fuel_type',
+        'transmission',
+    )
+
+    list_filter = (
+        'make',
+        'fuel_type',
+        'transmission',
+    )
+
+
+@admin.register(Supplier)
+class SupplierAdmin(admin.ModelAdmin):
+    list_display = (
+        'name',
+        'contact_person',
+        'phone',
+        'email',
+        'created_at',
+    )
+
+    search_fields = (
+        'name',
+        'contact_person',
+        'phone',
+        'email',
+    )
+
+
+@admin.register(Product)
+class ProductAdmin(admin.ModelAdmin):
+    list_display = (
+        'name',
+        'part_number',
+        'brand',
+        'category',
+        'selling_price',
+        'quantity',
+    )
+
+    search_fields = (
+        'name',
+        'part_number',
+        'barcode',
+        'brand__name',
+        'category__name',
+    )
+
+    list_filter = (
+        'brand',
+        'category',
+    )
+
+
+class PurchaseItemInline(admin.TabularInline):
+    model = PurchaseItem
+    extra = 1
+
+
+@admin.register(Purchase)
+class PurchaseAdmin(admin.ModelAdmin):
+    list_display = (
+        'id',
+        'supplier',
+        'invoice_number',
+        'purchase_date',
+        'status',
+        'created_at',
+    )
+
+    search_fields = (
+        'invoice_number',
+        'supplier__name',
+    )
+
+    list_filter = (
+        'status',
+        'supplier',
+        'purchase_date',
+    )
+
+    inlines = [PurchaseItemInline]
+    actions = ['receive_selected_purchases']
+
+    @admin.action(description='Receive selected purchases')
+    def receive_selected_purchases(self, request, queryset):
+        received_count = 0
+        error_count = 0
+
+        for purchase in queryset:
+            try:
+                receive_purchase(purchase)
+                received_count += 1
+
+            except ValueError as error:
+                error_count += 1
+                self.message_user(
+                    request,
+                    f'Purchase #{purchase.id}: {error}',
+                    level='error',
+                )
+
+        if received_count:
+            self.message_user(
+                request,
+                f'{received_count} purchase(s) received successfully.',
+            )
+
+        if error_count:
+            self.message_user(
+                request,
+                f'{error_count} purchase(s) could not be received.',
+                level='warning',
+            )
+
+
+@admin.register(PurchaseItem)
+class PurchaseItemAdmin(admin.ModelAdmin):
+    list_display = (
+        'purchase',
+        'product',
+        'quantity',
+        'unit_cost',
+    )
+
+    search_fields = (
+        'product__name',
+        'product__part_number',
+        'purchase__invoice_number',
+    )
+
+
+@admin.register(InventoryTransaction)
+class InventoryTransactionAdmin(admin.ModelAdmin):
+    list_display = (
+        'product',
+        'transaction_type',
+        'quantity',
+        'reference',
+        'created_at',
+    )
+
+    search_fields = (
+        'product__name',
+        'product__part_number',
+        'reference',
+    )
+
+    list_filter = (
+        'transaction_type',
+        'created_at',
+    )
+
+    readonly_fields = ('created_at',)
+
+
+@admin.register(Customer)
+class CustomerAdmin(admin.ModelAdmin):
+    list_display = (
+        'name',
+        'customer_type',
+        'phone',
+        'email',
+        'created_at',
+    )
+
+    search_fields = (
+        'name',
+        'phone',
+        'alternate_phone',
+        'email',
+    )
+
+    list_filter = (
+        'customer_type',
+        'created_at',
+    )
+
+    readonly_fields = (
+        'created_at',
+        'updated_at',
+    )
+
+
+class SaleItemInline(admin.TabularInline):
+    model = SaleItem
+    extra = 1
+
+
+@admin.register(Sale)
+class SaleAdmin(admin.ModelAdmin):
+    list_display = (
+        'invoice_number',
+        'customer',
+        'sale_date',
+        'status',
+        'payment_status',
+    )
+
+    search_fields = (
+        'invoice_number',
+        'customer__name',
+        'customer__phone',
+    )
+
+    list_filter = (
+        'status',
+        'payment_status',
+        'sale_date',
+    )
+
+    inlines = [SaleItemInline]
+    actions = ['complete_selected_sales']
+
+    @admin.action(description='Complete selected sales')
+    def complete_selected_sales(self, request, queryset):
+        completed_count = 0
+        error_count = 0
+
+        for sale in queryset:
+            try:
+                complete_sale(sale)
+                completed_count += 1
+
+            except ValueError as error:
+                error_count += 1
+                self.message_user(
+                    request,
+                    f'Sale {sale.invoice_number}: {error}',
+                    level='error',
+                )
+
+        if completed_count:
+            self.message_user(
+                request,
+                f'{completed_count} sale(s) completed successfully.',
+            )
+
+        if error_count:
+            self.message_user(
+                request,
+                f'{error_count} sale(s) could not be completed.',
+                level='warning',
+            )
+
+
+@admin.register(SaleItem)
+class SaleItemAdmin(admin.ModelAdmin):
+    list_display = (
+        'sale',
+        'product',
+        'quantity',
+        'unit_price',
+    )
+
+    search_fields = (
+        'sale__invoice_number',
+        'product__name',
+        'product__part_number',
+    )
+
+
+@admin.register(Payment)
+class PaymentAdmin(admin.ModelAdmin):
+    list_display = (
+        'id',
+        'sale',
+        'amount',
+        'payment_method',
+        'reference',
+        'received_at',
+    )
+
+    search_fields = (
+        'sale__invoice_number',
+        'reference',
+        'sale__customer__name',
+    )
+
+    list_filter = (
+        'payment_method',
+        'received_at',
+    )
+
+    readonly_fields = ('received_at',)
+
+    def has_add_permission(self, request):
+        return False
+
+
+class PaymentEntryAdmin(admin.ModelAdmin):
+    def get_urls(self):
+        custom_urls = [
+            path(
+                'record-payment/',
+                self.admin_site.admin_view(self.record_payment_view),
+                name='products_payment_record',
+            ),
+        ]
+
+        return custom_urls + super().get_urls()
+
+    def record_payment_view(self, request):
+        if request.method == 'POST':
+            form = PaymentForm(request.POST)
+
+            if form.is_valid():
+                try:
+                    payment = record_payment(
+                        sale=form.cleaned_data['sale'],
+                        amount=form.cleaned_data['amount'],
+                        payment_method=form.cleaned_data['payment_method'],
+                        reference=form.cleaned_data['reference'],
+                        notes=form.cleaned_data['notes'],
+                    )
+
+                    self.message_user(
+                        request,
+                        f'Payment of {payment.amount} recorded successfully.',
+                        level=messages.SUCCESS,
+                    )
+
+                    return HttpResponseRedirect(
+                        reverse('admin:products_payment_changelist')
+                    )
+
+                except (ValueError, ValidationError) as error:
+                    form.add_error(None, str(error))
+        else:
+            form = PaymentForm()
+
+        context = {
+            **self.admin_site.each_context(request),
+            'title': 'Record Payment',
+            'form': form,
+            'opts': Payment._meta,
+        }
+
+        return render(
+            request,
+            'admin/products/payment_form.html',
+            context,
+        )
+
+@admin.register(Payment)
+class PaymentAdmin(PaymentEntryAdmin):
+    list_display = (
+        'id',
+        'sale',
+        'amount',
+        'payment_method',
+        'reference',
+        'received_at',
+    )
+
+    search_fields = (
+        'sale__invoice_number',
+        'reference',
+        'sale__customer__name',
+    )
+
+    list_filter = ('payment_method', 'received_at')
+
+    readonly_fields = ('received_at',)
+
+    def has_add_permission(self, request):
+        return False
+
+@admin.register(SaleItem)
+class SaleItemAdmin(admin.ModelAdmin):
+    list_display = (
+        'sale',
+        'product',
+        'quantity',
+        'unit_price',
+    )
+
+    search_fields = (
+        'sale__invoice_number',
+        'product__name',
+        'product__part_number',
+    )
+
+
+
+class PaymentEntryAdmin(admin.ModelAdmin):
+    def get_urls(self):
+        custom_urls = [
+            path(
+                'record-payment/',
+                self.admin_site.admin_view(self.record_payment_view),
+                name='products_payment_record',
+            ),
+        ]
+
+        return custom_urls + super().get_urls()
+
+    def record_payment_view(self, request):
+        if request.method == 'POST':
+            form = PaymentForm(request.POST)
+
+            if form.is_valid():
+                try:
+                    payment = record_payment(
+                        sale=form.cleaned_data['sale'],
+                        amount=form.cleaned_data['amount'],
+                        payment_method=form.cleaned_data['payment_method'],
+                        reference=form.cleaned_data['reference'],
+                        notes=form.cleaned_data['notes'],
+                    )
+
+                    self.message_user(
+                        request,
+                        f'Payment of {payment.amount} recorded successfully.',
+                        level=messages.SUCCESS,
+                    )
+
+                    return HttpResponseRedirect(
+                        reverse('admin:products_payment_changelist')
+                    )
+
+                except (ValueError, ValidationError) as error:
+                    form.add_error(None, str(error))
+        else:
+            form = PaymentForm()
+
+        context = {
+            **self.admin_site.each_context(request),
+            'title': 'Record Payment',
+            'form': form,
+            'opts': Payment._meta,
+        }
+
+        return render(
+            request,
+            'admin/products/payment_form.html',
+            context,
+        )
+

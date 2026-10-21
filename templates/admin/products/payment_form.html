@@ -1,0 +1,183 @@
+
+{% extends "admin/base_site.html" %}
+
+{% block content %}
+<div id="content-main">
+
+    <div id="invoice-summary"
+         style="padding: 16px; margin-bottom: 20px; border: 1px solid #ccc; border-radius: 6px;"
+         hidden>
+
+        <h2>Invoice Summary</h2>
+
+        <p>
+            Invoice:
+            <strong id="summary-invoice">—</strong>
+        </p>
+
+        <p>
+            Invoice total:
+            <strong id="summary-total">—</strong>
+        </p>
+
+        <p>
+            Amount paid:
+            <strong id="summary-paid">—</strong>
+        </p>
+
+        <p>
+            Outstanding balance:
+            <strong id="summary-balance">—</strong>
+        </p>
+    </div>
+
+    <form method="post">
+        {% csrf_token %}
+
+        {{ form.as_p }}
+
+        <p id="payment-amount-help" style="margin-top: 10px;">
+            Select an invoice to see the outstanding balance.
+        </p>
+
+        <div class="submit-row">
+            <input
+                type="submit"
+                value="Record payment"
+                class="default"
+            >
+        </div>
+    </form>
+
+</div>
+
+<script>
+(function () {
+    const saleField = document.getElementById('id_sale');
+    const summary = document.getElementById('invoice-summary');
+    const amountField = document.getElementById('id_amount');
+    const amountHelp = document.getElementById('payment-amount-help');
+
+    let outstandingBalance = null;
+
+    if (!saleField || !summary || !amountHelp) {
+        return;
+    }
+
+    // Load invoice details when an invoice is selected.
+    saleField.addEventListener('change', async function () {
+        const saleId = saleField.value;
+
+        outstandingBalance = null;
+
+        if (amountField) {
+            amountField.removeAttribute('max');
+        }
+
+        if (!saleId) {
+            summary.hidden = true;
+            amountHelp.textContent =
+                'Select an invoice to see the outstanding balance.';
+            return;
+        }
+
+        try {
+            const url = new URL(window.location.href);
+
+            url.search = '';
+            url.searchParams.set('sale_id', saleId);
+
+            const response = await fetch(url.toString(), {
+                headers: {
+                    'X-Requested-With': 'XMLHttpRequest'
+                }
+            });
+
+            if (!response.ok) {
+                throw new Error('Could not load invoice details.');
+            }
+
+            const data = await response.json();
+
+            document.getElementById('summary-invoice').textContent =
+                data.invoice_number;
+
+            document.getElementById('summary-total').textContent =
+                'GH₵ ' + Number(data.total).toFixed(2);
+
+            document.getElementById('summary-paid').textContent =
+                'GH₵ ' + Number(data.paid).toFixed(2);
+
+            document.getElementById('summary-balance').textContent =
+                'GH₵ ' + Number(data.balance).toFixed(2);
+
+            outstandingBalance = Number(data.balance);
+
+            if (amountField && outstandingBalance > 0) {
+                amountField.max = outstandingBalance.toFixed(2);
+            }
+
+            summary.hidden = false;
+
+            updateAmountMessage();
+
+        } catch (error) {
+            summary.hidden = true;
+            outstandingBalance = null;
+
+            amountHelp.textContent =
+                'Unable to load invoice details. Please try again.';
+
+            console.error(error);
+        }
+    });
+
+    // Update the warning as the staff member types.
+    function updateAmountMessage() {
+        if (outstandingBalance === null) {
+            amountHelp.textContent =
+                'Select an invoice to see the outstanding balance.';
+            return;
+        }
+
+        if (outstandingBalance <= 0) {
+            amountHelp.textContent =
+                'This invoice has no outstanding balance.';
+            return;
+        }
+
+        if (!amountField || !amountField.value) {
+            amountHelp.textContent =
+                'Maximum payment: GH₵ ' +
+                outstandingBalance.toFixed(2);
+            return;
+        }
+
+        const enteredAmount = Number(amountField.value);
+
+        if (!Number.isFinite(enteredAmount) || enteredAmount <= 0) {
+            amountHelp.textContent =
+                'Enter an amount greater than zero.';
+        } else if (enteredAmount > outstandingBalance) {
+            amountHelp.textContent =
+                'Warning: The amount exceeds the outstanding balance of GH₵ ' +
+                outstandingBalance.toFixed(2) + '.';
+        } else {
+            amountHelp.textContent =
+                'Amount is within the outstanding balance.';
+        }
+    }
+
+    if (amountField) {
+        amountField.addEventListener('input', updateAmountMessage);
+    }
+
+    // Load the summary automatically if the form already has an invoice.
+    if (saleField.value) {
+        saleField.dispatchEvent(new Event('change'));
+    }
+
+})();
+</script>
+
+{% endblock %}

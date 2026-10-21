@@ -1,0 +1,623 @@
+from django.db import transaction
+from django.db.models import F, Sum
+from decimal import Decimal, InvalidOperation
+
+from .models import Purchase, InventoryTransaction, Sale, Payment, Product, SaleItem, Refund, SaleReturn, SaleReturnItem
+
+
+
+
+@transaction.atomic
+def receive_purchase(purchase, received_by=None):
+    # Lock the purchase record to prevent concurrent receiving.
+    purchase = Purchase.objects.select_for_update().get(
+        pk=purchase.pk
+    )
+
+    if purchase.status == 'RECEIVED':
+        raise ValueError(
+            'This purchase has already been received.'
+        )
+
+    if purchase.status == 'CANCELLED':
+        raise ValueError(
+            'A cancelled purchase cannot be received.'
+        )
+
+    items = list(
+        purchase.items.select_related('product')
+    )
+
+    if not items:
+        raise ValueError(
+            'An empty purchase cannot be received.'
+        )
+
+    for item in items:
+        # Lock each product before updating its stock.
+        product = Product.objects.select_for_update().get(
+            pk=item.product_id
+        )
+
+        # Save the current stock quantity before adding new stock.
+        old_quantity = product.quantity
+
+        # Save the current average cost before receiving this purchase.
+        old_average_cost = product.cost_price
+
+        # Calculate the value of the stock already available.
+        old_stock_value = (
+            Decimal(old_quantity) * old_average_cost
+        )
+
+        # Calculate the value of the stock being received.
+        incoming_stock_value = (
+            Decimal(item.quantity) * item.unit_cost
+        )
+
+        # Calculate the total quantity after receiving stock.
+        new_quantity = old_quantity + item.quantity
+
+        # Calculate the new moving weighted-average cost.
+        if new_quantity > 0:
+            new_average_cost = (
+                old_stock_value + incoming_stock_value
+            ) / Decimal(new_quantity)
+
+            # Store the average to two decimal places.
+            new_average_cost = new_average_cost.quantize(
+                Decimal("0.01")
+            )
+        else:
+            new_average_cost = item.unit_cost
+
+        # Update both stock quantity and average cost.
+        product.quantity = new_quantity
+        product.cost_price = new_average_cost
+
+        product.save(
+            update_fields=[
+                "quantity",
+                "cost_price",
+                "updated_at",
+            ]
+        )
+
+        InventoryTransaction.objects.create(
+            product=product,
+            transaction_type='PURCHASE',
+            quantity=item.quantity,
+            reference=f'PURCHASE-{purchase.id}',
+            notes=(
+                f'Stock received from purchase #{purchase.id}.'
+            ),
+            created_by=received_by,
+        )
+
+    purchase.status = 'RECEIVED'
+    purchase.save(
+        update_fields=[
+            'status',
+            'updated_at',
+        ]
+    )
+
+    return purchase
+
+
+from django.db import transaction
+from django.db.models import F
+
+from .models import (
+    Sale,
+    InventoryTransaction,
+)
+
+
+
+@transaction.atomic
+def complete_sale(sale, completed_by=None):
+    # Lock the sale record to prevent concurrent completion.
+    sale = Sale.objects.select_for_update().get(
+        pk=sale.pk
+    )
+
+    if sale.status == 'COMPLETED':
+        raise ValueError(
+            'This sale has already been completed.'
+        )
+
+    if sale.status == 'CANCELLED':
+        raise ValueError(
+            'A cancelled sale cannot be completed.'
+        )
+
+    items = list(sale.items.all())
+
+    if not items:
+        raise ValueError(
+            'Cannot complete a sale without items.'
+        )
+
+    for item in items:
+        if item.quantity <= 0:
+            raise ValueError(
+                'Sale item quantities must be greater than zero.'
+            )
+
+        # Preserve the current average cost for this sale item.
+        product = Product.objects.select_for_update().get(
+            pk=item.product_id
+        )
+
+        item.unit_cost = product.cost_price
+        item.save(update_fields=["unit_cost"])
+
+        updated = (
+            type(item.product).objects
+            .filter(
+                pk=item.product_id,
+                quantity__gte=item.quantity,
+            )
+            .update(
+                quantity=F('quantity') - item.quantity
+            )
+        )
+
+        if updated == 0:
+            raise ValueError(
+                f'Insufficient stock for {item.product.name}.'
+            )
+
+        InventoryTransaction.objects.create(
+            product_id=item.product_id,
+            transaction_type='SALE',
+            quantity=-item.quantity,
+            reference=f'SALE-{sale.invoice_number}',
+            notes=(
+                f'Stock sold on invoice {sale.invoice_number}.'
+            ),
+            created_by=completed_by,
+        )
+
+    sale.status = 'COMPLETED'
+    sale.save(
+        update_fields=['status', 'updated_at']
+    )
+
+    return sale
+
+
+
+@transaction.atomic
+def cancel_draft_sale(sale):
+    """
+    Cancel a draft sale without changing inventory.
+    Completed sales require a separate returns/refunds workflow.
+    """
+    sale = Sale.objects.select_for_update().get(pk=sale.pk)
+
+    if sale.status == 'COMPLETED':
+        raise ValueError(
+            'A completed sale cannot be cancelled through this workflow.'
+        )
+
+    if sale.status == 'CANCELLED':
+        raise ValueError(
+            'This sale has already been cancelled.'
+        )
+
+    if sale.status != 'DRAFT':
+        raise ValueError('Only draft sales can be cancelled.')
+
+    if sale.payments.exists():
+        raise ValueError(
+            'A sale with payments cannot be cancelled through this workflow.'
+        )
+
+    sale.status = 'CANCELLED'
+    sale.save(update_fields=['status', 'updated_at'])
+
+    return sale
+
+
+
+@transaction.atomic
+def process_sale_return(sale, items, reason, created_by=None):
+    """
+    Record a return against a completed sale.
+
+    Each item must be a dictionary containing:
+        sale_item_id: ID of the original SaleItem
+        quantity: quantity being returned
+        restock: True if the item is approved for resale
+
+    Only resalable items are added back to inventory.
+    """
+    sale = Sale.objects.select_for_update().get(pk=sale.pk)
+
+    if sale.status != 'COMPLETED':
+        raise ValueError(
+            'Only completed sales can have returns.'
+        )
+
+    reason = str(reason or '').strip()
+
+    if not reason:
+        raise ValueError('A return reason is required.')
+
+    try:
+        items = list(items)
+    except (TypeError, ValueError):
+        raise ValueError('Provide a valid list of return items.')
+
+    if not items:
+        raise ValueError('A return must contain at least one item.')
+
+    validated_items = []
+    seen_sale_item_ids = set()
+
+    for entry in items:
+        if not isinstance(entry, dict):
+            raise ValueError('Each return item must be a dictionary.')
+
+        sale_item_id = entry.get('sale_item_id')
+        quantity = entry.get('quantity')
+        restock = entry.get('restock', False)
+
+        if (
+            not isinstance(sale_item_id, int)
+            or isinstance(sale_item_id, bool)
+        ):
+            raise ValueError('A valid original sale item is required.')
+
+        if sale_item_id in seen_sale_item_ids:
+            raise ValueError(
+                'Do not include the same sale item more than once.'
+            )
+
+        seen_sale_item_ids.add(sale_item_id)
+
+        if (
+            not isinstance(quantity, int)
+            or isinstance(quantity, bool)
+            or quantity <= 0
+        ):
+            raise ValueError(
+                'Return quantities must be positive whole numbers.'
+            )
+
+        if not isinstance(restock, bool):
+            raise ValueError(
+                'The restock decision must be True or False.'
+            )
+
+        try:
+            sale_item = (
+                SaleItem.objects.select_for_update()
+                .select_related('product')
+                .get(pk=sale_item_id, sale_id=sale.pk)
+            )
+        except SaleItem.DoesNotExist:
+            raise ValueError(
+                'A return item does not belong to this sale.'
+            )
+
+        previous_returns = (
+            SaleReturnItem.objects.filter(
+                sale_item=sale_item,
+                sale_return__sale=sale,
+            ).aggregate(total=Sum('quantity'))['total'] or 0
+        )
+
+        remaining_quantity = (
+            sale_item.quantity - previous_returns
+        )
+
+        if quantity > remaining_quantity:
+            raise ValueError(
+                f'Cannot return {quantity} unit(s) of '
+                f'{sale_item.product.name}. Only '
+                f'{remaining_quantity} unit(s) remain eligible.'
+            )
+
+        validated_items.append(
+            (sale_item, quantity, restock)
+        )
+
+    sale_return = SaleReturn.objects.create(
+        sale=sale,
+        reason=reason,
+        created_by=created_by,
+    )
+
+    for sale_item, quantity, restock in validated_items:
+        SaleReturnItem.objects.create(
+            sale_return=sale_return,
+            sale_item=sale_item,
+            quantity=quantity,
+            unit_price=sale_item.unit_price,
+            restock=restock, unit_cost=sale_item.unit_cost,
+        )
+
+        if restock:
+            product = Product.objects.select_for_update().get(
+                pk=sale_item.product_id
+            )
+
+            Product.objects.filter(pk=product.pk).update(
+                quantity=F('quantity') + quantity
+            )
+
+            InventoryTransaction.objects.create(
+                product=product,
+                transaction_type='RETURN',
+                quantity=quantity,
+                reference=f'RETURN-{sale_return.pk}',
+                notes=(
+                    f'Restocked {quantity} unit(s) from '
+                    f'invoice {sale.invoice_number}.'
+                ),
+                created_by=created_by,
+            )
+
+    return sale_return
+
+
+@transaction.atomic
+def record_refund(
+    sale_return,
+    amount,
+    refund_method,
+    reference='',
+    notes='',
+    created_by=None,
+):
+    """
+    Record a refund without changing the original payment records.
+
+    The refund cannot exceed the return value or the amount
+    the customer has paid, after previous refunds.
+    """
+    sale = Sale.objects.select_for_update().get(
+        pk=sale_return.sale_id
+    )
+
+    sale_return = SaleReturn.objects.select_for_update().get(
+        pk=sale_return.pk,
+        sale_id=sale.pk,
+    )
+
+    if sale.status != 'COMPLETED':
+        raise ValueError(
+            'Refunds can only be recorded for completed sales.'
+        )
+
+    try:
+        amount = Decimal(str(amount))
+    except (InvalidOperation, ValueError, TypeError):
+        raise ValueError('Enter a valid refund amount.')
+
+    if not amount.is_finite() or amount <= Decimal('0.00'):
+        raise ValueError(
+            'Refund amount must be greater than zero.'
+        )
+
+    if amount > Decimal('99999999.99'):
+        raise ValueError(
+            'Refund amount exceeds the maximum allowed value.'
+        )
+
+    if amount != amount.quantize(Decimal('0.01')):
+        raise ValueError(
+            'Refund amount cannot have more than two decimal places.'
+        )
+
+    valid_methods = dict(Refund.REFUND_METHOD_CHOICES)
+
+    if refund_method not in valid_methods:
+        raise ValueError('Select a valid refund method.')
+
+    reference = str(reference or '').strip()
+
+    if reference and Refund.objects.filter(
+        refund_method=refund_method,
+        reference=reference,
+    ).exists():
+        raise ValueError(
+            'This refund reference has already been recorded.'
+        )
+
+    total_paid = (
+        Payment.objects.filter(sale=sale).aggregate(
+            total=Sum('amount')
+        )['total'] or Decimal('0.00')
+    )
+
+    total_refunded = (
+        Refund.objects.filter(
+            sale_return__sale=sale,
+        ).aggregate(total=Sum('amount'))['total']
+        or Decimal('0.00')
+    )
+
+    return_refunded = (
+        Refund.objects.filter(
+            sale_return=sale_return,
+        ).aggregate(total=Sum('amount'))['total']
+        or Decimal('0.00')
+    )
+
+    return_balance = sale_return.total_amount - return_refunded
+    paid_balance = total_paid - total_refunded
+
+    if amount > return_balance:
+        raise ValueError(
+            f'Refund exceeds the remaining return value of '
+            f'{return_balance:.2f}.'
+        )
+
+    if amount > paid_balance:
+        raise ValueError(
+            f'Refund exceeds the amount paid and still refundable: '
+            f'{paid_balance:.2f}.'
+        )
+
+    return Refund.objects.create(
+        sale_return=sale_return,
+        amount=amount,
+        refund_method=refund_method,
+        reference=reference,
+        notes=notes,
+        created_by=created_by,
+    )
+
+
+
+@transaction.atomic
+def record_payment(
+    sale,
+    amount,
+    payment_method,
+    reference='',
+    notes='', created_by=None,
+):
+    # Lock the sale while recording its payment.
+    sale = Sale.objects.select_for_update().get(pk=sale.pk)
+
+    # Only completed sales can receive payments.
+    if sale.status != 'COMPLETED':
+        raise ValueError(
+            'Payments can only be recorded for completed sales.'
+        )
+
+    # Convert the amount safely to Decimal.
+    try:
+        amount = Decimal(str(amount))
+    except (InvalidOperation, ValueError, TypeError):
+        raise ValueError('Enter a valid payment amount.')
+
+    # Reject zero, negative, NaN, and infinite amounts.
+    if not amount.is_finite() or amount <= Decimal('0.00'):
+        raise ValueError(
+            'Payment amount must be greater than zero.'
+        )
+
+    # Require exactly two or fewer decimal places.
+    if amount != amount.quantize(Decimal('0.01')):
+        raise ValueError(
+            'Payment amount cannot have more than two decimal places.'
+        )
+
+    # The Payment amount field allows at most 10 digits,
+    # including two decimal places.
+    if amount > Decimal('99999999.99'):
+        raise ValueError(
+            'Payment amount exceeds the maximum allowed value.'
+        )
+
+    # Validate the selected payment method.
+    valid_methods = dict(Payment.PAYMENT_METHOD_CHOICES)
+
+    if payment_method not in valid_methods:
+        raise ValueError('Select a valid payment method.')
+
+    # Normalize the reference before checking for duplicates.
+    reference = str(reference or '').strip()
+
+    # The database constraint applies to every payment method.
+    # Keep the service validation consistent with that constraint.
+    if reference:
+        duplicate_reference = Payment.objects.filter(
+            payment_method=payment_method,
+            reference=reference,
+        ).exists()
+
+        if duplicate_reference:
+            raise ValueError(
+                'This transaction reference has already been recorded.'
+            )
+
+    # Calculate the amount already received for this sale.
+    previous_payments = sale.payments.aggregate(
+        total=Sum('amount')
+    )['total'] or Decimal('0.00')
+
+    invoice_total = sale.total_amount
+    remaining_balance = invoice_total - previous_payments
+
+    # Never accept more than the outstanding balance.
+    if amount > remaining_balance:
+        raise ValueError(
+            f'Payment exceeds the outstanding balance of '
+            f'{remaining_balance:.2f}.'
+        )
+
+    # Create the payment record.
+    payment = Payment.objects.create(
+        sale=sale,
+        amount=amount,
+        payment_method=payment_method,
+        reference=reference,
+        notes=notes, created_by=created_by,
+    )
+
+    # Update the invoice payment status.
+    total_paid = previous_payments + amount
+
+    if total_paid >= invoice_total:
+        sale.payment_status = 'PAID'
+    elif total_paid > Decimal('0.00'):
+        sale.payment_status = 'PARTIAL'
+    else:
+        sale.payment_status = 'UNPAID'
+
+    sale.save(
+        update_fields=['payment_status', 'updated_at']
+    )
+
+    return payment
+
+
+
+@transaction.atomic
+def adjust_stock(product_id, new_quantity, reason, created_by=None):
+    """
+    Set a product's stock to its physically counted quantity
+    and record the difference in inventory history.
+    """
+    if isinstance(new_quantity, bool) or not isinstance(new_quantity, int):
+        raise ValueError("The new stock quantity must be a whole number.")
+
+    if new_quantity < 0:
+        raise ValueError("Stock quantity cannot be negative.")
+
+    if not isinstance(reason, str) or not reason.strip():
+        raise ValueError("A reason is required for stock adjustment.")
+
+    product = Product.objects.select_for_update().get(pk=product_id)
+
+    old_quantity = product.quantity
+    difference = new_quantity - old_quantity
+
+    if difference == 0:
+        raise ValueError(
+            "The new quantity is the same as the current quantity."
+        )
+
+    product.quantity = new_quantity
+    product.save(update_fields=["quantity", "updated_at"])
+
+    InventoryTransaction.objects.create(
+        product=product,
+        created_by=created_by,
+        transaction_type="ADJUSTMENT",
+        quantity=difference,
+        reference=f"ADJUSTMENT-PRODUCT-{product.id}",
+        notes=(
+            f"Stock adjusted from {old_quantity} to {new_quantity}. "
+            f"Reason: {reason.strip()}"
+        ),
+    )
+
+    return product

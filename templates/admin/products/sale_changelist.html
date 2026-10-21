@@ -1,0 +1,23 @@
+
+{% extends "admin/change_list.html" %}
+
+{% block object-tools-items %}
+    <li>
+        <a href="{% url 'admin:products_sale_outstanding' %}">
+            Outstanding Invoices
+        </a>
+    </li>
+    <li>
+        <a href="{% url 'admin:products_sale_record_return' %}">
+            Record Sale Return
+        </a>
+    </li>
+    <li>
+        <a href="{% url 'admin:products_sale_record_refund' %}">
+            Record Customer Refund
+        </a>
+    </li>
+
+    {{ block.super }}
+{% endblock %}
+

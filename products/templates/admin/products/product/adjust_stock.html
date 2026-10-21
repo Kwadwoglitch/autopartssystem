@@ -1,0 +1,27 @@
+
+{% extends "admin/base_site.html" %}
+
+{% block content %}
+  <h1>{{ title }}</h1>
+
+  <div class="module">
+    <p><strong>Product:</strong> {{ product }}</p>
+    <p><strong>Current stock:</strong> {{ product.quantity }}</p>
+
+    <form method="post">
+      {% csrf_token %}
+
+      {{ form.as_p }}
+
+      <input
+        type="submit"
+        value="Save stock adjustment"
+        class="default"
+      >
+
+      <a href="{% url 'admin:products_product_changelist' %}">
+        Cancel
+      </a>
+    </form>
+  </div>
+{% endblock %}

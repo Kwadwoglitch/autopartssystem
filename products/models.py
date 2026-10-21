@@ -1,0 +1,910 @@
+
+# Import Django's model tools for creating database tables and fields.
+from django.db import models
+
+# Import Q to define conditional database constraints.
+from django.db.models import Q
+from django.conf import settings
+
+
+from decimal import Decimal
+
+# ============================================================
+# 1. BRAND MODEL
+# Stores the manufacturers or brands of car parts.
+# Examples: Toyota, Bosch, Denso.
+# ============================================================
+
+class Brand(models.Model):
+
+    # The brand name must be unique.
+    name = models.CharField(max_length=100, unique=True)
+
+    # Optional description of the brand.
+    description = models.TextField(blank=True)
+
+    # Automatically record when the brand is created.
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    # Automatically update this field whenever the record changes.
+    updated_at = models.DateTimeField(auto_now=True)
+
+    # Display the brand name in Django Admin and other interfaces.
+    def __str__(self):
+        return self.name
+
+
+# ============================================================
+# 2. CATEGORY MODEL
+# Groups products into categories.
+# Examples: Engine Parts, Brake Parts, Electrical Parts.
+# ============================================================
+
+class Category(models.Model):
+
+    # Each category must have a unique name.
+    name = models.CharField(max_length=100, unique=True)
+
+    # Optional information about the category.
+    description = models.TextField(blank=True)
+
+    # Record creation and modification times.
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+
+        # Customize the singular and plural labels.
+        verbose_name = "Category"
+        verbose_name_plural = "Categories"
+
+    # Display the category name.
+    def __str__(self):
+        return self.name
+
+
+# ============================================================
+# 3. VEHICLE MODEL
+# Stores vehicle information for product compatibility.
+# Examples: Toyota Corolla, Honda Civic.
+# ============================================================
+
+class VehicleModel(models.Model):
+
+    # Vehicle manufacturer and model name.
+    make = models.CharField(max_length=100)
+    model = models.CharField(max_length=100)
+
+    # First and last model years covered by this record.
+    year_start = models.PositiveIntegerField()
+    year_end = models.PositiveIntegerField()
+
+    # Optional vehicle specifications.
+    engine = models.CharField(max_length=100, blank=True)
+    fuel_type = models.CharField(max_length=50, blank=True)
+    transmission = models.CharField(max_length=50, blank=True)
+
+    # Record creation and modification times.
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+
+        # Sort vehicles by manufacturer, model, and starting year.
+        ordering = ['make', 'model', 'year_start']
+
+    # Display a readable vehicle description.
+    def __str__(self):
+        return (
+            f"{self.make} {self.model} "
+            f"({self.year_start} to {self.year_end})"
+        )
+
+
+# ============================================================
+# 4. SUPPLIER MODEL
+# Stores businesses and people who supply car parts.
+# ============================================================
+
+class Supplier(models.Model):
+
+    # Supplier name must be unique.
+    name = models.CharField(max_length=200, unique=True)
+
+    # Contact person and communication details.
+    contact_person = models.CharField(max_length=150, blank=True)
+    phone = models.CharField(max_length=30, blank=True)
+    email = models.EmailField(blank=True)
+
+    # Supplier's physical or postal address.
+    address = models.TextField(blank=True)
+
+    # Record creation and modification times.
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    # Display the supplier name.
+    def __str__(self):
+        return self.name
+
+
+# ============================================================
+# 5. PRODUCT MODEL
+# Stores car parts, prices, quantities, and compatibility.
+# ============================================================
+
+class Product(models.Model):
+
+    # Product name and part number must each be unique.
+    name = models.CharField(max_length=100, unique=True)
+    part_number = models.CharField(max_length=100, unique=True)
+
+    # Optional barcode. Null is allowed in the database.
+    barcode = models.CharField(
+        max_length=100,
+        unique=True,
+        blank=True,
+        null=True,
+    )
+
+    # Connect each product to its brand.
+    # PROTECT prevents deleting a brand that has products.
+    brand = models.ForeignKey(
+        Brand,
+        on_delete=models.PROTECT,
+        related_name='products',
+    )
+
+    # Connect each product to its category.
+    category = models.ForeignKey(
+        Category,
+        on_delete=models.PROTECT,
+        related_name='products',
+    )
+
+    # A product can fit multiple vehicle models.
+    # A vehicle model can also be compatible with many products.
+    compatible_vehicles = models.ManyToManyField(
+        VehicleModel,
+        blank=True,
+        related_name='products',
+    )
+
+    # Optional product description.
+    description = models.TextField(blank=True)
+
+    # Amount paid to acquire one unit of the product.
+    cost_price = models.DecimalField(
+        max_digits=10,
+        decimal_places=2,
+    )
+
+    # Price charged to the customer for one unit.
+    selling_price = models.DecimalField(
+        max_digits=10,
+        decimal_places=2,
+    )
+
+    # Current quantity available in stock.
+    quantity = models.PositiveIntegerField(default=0)
+
+    # Minimum quantity before stock should be replenished.
+    minimum_stock = models.PositiveIntegerField(default=1)
+
+    # Record creation and modification times.
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    # Display product name and part number.
+    def __str__(self):
+        return f"{self.name} ({self.part_number})"
+
+
+# ============================================================
+# 6. PURCHASE MODEL
+# Represents an order or purchase from a supplier.
+# ============================================================
+
+class Purchase(models.Model):
+
+    # Available purchase statuses.
+    STATUS_CHOICES = [
+        ('DRAFT', 'Draft'),
+        ('RECEIVED', 'Received'),
+        ('CANCELLED', 'Cancelled'),
+    ]
+
+    # Supplier associated with this purchase.
+    # PROTECT prevents deleting a supplier with purchase records.
+    supplier = models.ForeignKey(
+        Supplier,
+        on_delete=models.PROTECT,
+        related_name='purchases',
+    )
+
+    # Supplier's invoice number, if available.
+    invoice_number = models.CharField(
+        max_length=100,
+        blank=True,
+    )
+
+    # Date the purchase was made.
+    purchase_date = models.DateField()
+
+    # Draft purchases have not yet been received into stock.
+    status = models.CharField(
+        max_length=20,
+        choices=STATUS_CHOICES,
+        default='DRAFT',
+    )
+
+    # Optional notes about the purchase.
+    notes = models.TextField(blank=True)
+
+    # Record creation and modification times.
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    # Display the purchase number and supplier.
+    def __str__(self):
+        return f"Purchase #{self.id} from {self.supplier.name}"
+
+
+# ============================================================
+# 7. PURCHASE ITEM MODEL
+# Stores the individual products included in a purchase.
+# One purchase can contain many purchase items.
+# ============================================================
+
+class PurchaseItem(models.Model):
+
+    # The purchase this item belongs to.
+    # Deleting a purchase also deletes its item records.
+    purchase = models.ForeignKey(
+        Purchase,
+        on_delete=models.CASCADE,
+        related_name='items',
+    )
+
+    # Product being purchased.
+    product = models.ForeignKey(
+        Product,
+        on_delete=models.PROTECT,
+        related_name='purchase_items',
+    )
+
+    # Number of units purchased.
+    quantity = models.PositiveIntegerField()
+
+    # Cost per unit for this particular purchase.
+    unit_cost = models.DecimalField(
+        max_digits=10,
+        decimal_places=2,
+    )
+
+    # Display the product and purchased quantity.
+    def __str__(self):
+        return f"{self.product.name} × {self.quantity}"
+
+    # Calculate the total cost for this purchase item.
+    @property
+    def total_cost(self):
+        return self.quantity * self.unit_cost
+
+
+# ============================================================
+# 8. INVENTORY TRANSACTION MODEL
+# Records stock movements for auditing purposes.
+# Positive quantities add stock, negative quantities remove stock.
+# ============================================================
+
+class InventoryTransaction(models.Model):
+
+    # Types of inventory movements.
+    TRANSACTION_TYPES = [
+        ('PURCHASE', 'Purchase'),
+        ('SALE', 'Sale'),
+        ('RETURN', 'Return'),
+        ('ADJUSTMENT', 'Adjustment'),
+        ('DAMAGE', 'Damage'),
+    ]
+
+    # Product whose inventory changed.
+    product = models.ForeignKey(
+        Product,
+        on_delete=models.PROTECT,
+        related_name='inventory_transactions',
+    )
+
+    # Reason for the inventory movement.
+    transaction_type = models.CharField(
+        max_length=20,
+        choices=TRANSACTION_TYPES,
+    )
+
+    # User who performed the inventory transaction.
+    # Keep the record if that user is later deleted.
+    created_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='inventory_transactions_created',
+    )
+
+
+    # Positive for stock received and negative for stock removed.
+    quantity = models.IntegerField()
+
+    # Optional reference to a purchase, sale, or other record.
+    reference = models.CharField(
+        max_length=100,
+        blank=True,
+    )
+
+    # Additional explanation of the movement.
+    notes = models.TextField(blank=True)
+
+    # Automatically record when the movement occurred.
+    created_at = models.DateTimeField(auto_now_add=True)
+
+
+    class Meta:
+        ordering = ['-created_at']
+
+        constraints = [
+            models.CheckConstraint(
+                condition=~models.Q(quantity=0),
+                name='inventory_transaction_quantity_nonzero',
+            ),
+            models.CheckConstraint(
+                condition=(
+                    ~models.Q(transaction_type='PURCHASE')
+                    | models.Q(quantity__gt=0)
+                ),
+                name='inventory_purchase_quantity_positive',
+            ),
+            models.CheckConstraint(
+                condition=(
+                    ~models.Q(transaction_type__in=['SALE', 'DAMAGE'])
+                    | models.Q(quantity__lt=0)
+                ),
+                name='inventory_sale_damage_quantity_negative',
+            ),
+
+            models.CheckConstraint(
+                condition=models.Q(
+                    transaction_type__in=[
+                        'PURCHASE',
+                        'SALE',
+                        'RETURN',
+                        'ADJUSTMENT',
+                        'DAMAGE',
+                    ]
+                ),
+                name='inventory_transaction_valid_type',
+            ),
+            models.CheckConstraint(
+                condition=(
+                    ~models.Q(transaction_type='RETURN')
+                    | models.Q(quantity__gt=0)
+                ),
+                name='inventory_return_quantity_positive',
+            ),
+
+        ]
+
+
+
+# ============================================================
+# 9. CUSTOMER MODEL
+# Stores individual customers and business customers.
+# ============================================================
+
+class Customer(models.Model):
+
+    # Available customer types.
+    CUSTOMER_TYPES = [
+        ('INDIVIDUAL', 'Individual'),
+        ('BUSINESS', 'Business'),
+    ]
+
+    # Customer's name.
+    name = models.CharField(max_length=200)
+
+    # Customer type, defaulting to an individual.
+    customer_type = models.CharField(
+        max_length=20,
+        choices=CUSTOMER_TYPES,
+        default='INDIVIDUAL',
+    )
+
+    # Primary and alternative contact numbers.
+    phone = models.CharField(max_length=30, blank=True)
+    alternate_phone = models.CharField(max_length=30, blank=True)
+
+    # Optional email, address, and notes.
+    email = models.EmailField(blank=True)
+    address = models.TextField(blank=True)
+    notes = models.TextField(blank=True)
+
+    # Record creation and modification times.
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+
+        # Sort customers alphabetically by name.
+        ordering = ['name']
+
+    # Display the customer's name.
+    def __str__(self):
+        return self.name
+
+
+# ============================================================
+# 10. SALE MODEL
+# Represents a customer invoice or sales transaction.
+# ============================================================
+
+class Sale(models.Model):
+
+    # Available sales statuses.
+    STATUS_CHOICES = [
+        ('DRAFT', 'Draft'),
+        ('COMPLETED', 'Completed'),
+        ('CANCELLED', 'Cancelled'),
+    ]
+
+    # Available payment statuses.
+    PAYMENT_STATUS_CHOICES = [
+        ('UNPAID', 'Unpaid'),
+        ('PARTIAL', 'Partially Paid'),
+        ('PAID', 'Paid'),
+    ]
+
+    # Customer associated with the sale.
+    # A customer is optional for walk-in sales.
+    customer = models.ForeignKey(
+        Customer,
+        on_delete=models.PROTECT,
+        related_name='sales',
+        null=True,
+        blank=True,
+    )
+
+    # Unique invoice number for identifying the sale.
+    invoice_number = models.CharField(
+        max_length=50,
+        unique=True,
+    )
+
+    # Automatically record when the sale is created.
+    sale_date = models.DateTimeField(auto_now_add=True)
+
+    # Initial status is Draft until the sale is completed.
+    status = models.CharField(
+        max_length=20,
+        choices=STATUS_CHOICES,
+        default='DRAFT',
+    )
+
+    # Initial payment status is Unpaid.
+    payment_status = models.CharField(
+        max_length=20,
+        choices=PAYMENT_STATUS_CHOICES,
+        default='UNPAID',
+    )
+
+    # Optional notes about the sale.
+    notes = models.TextField(blank=True)
+
+    # Record creation and modification times.
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+
+        # Display the most recent sales first.
+        ordering = ['-sale_date']
+
+    # Display the invoice number.
+    def __str__(self):
+        return self.invoice_number
+
+    # Calculate the invoice total from all its sale items.
+    @property
+    def total_amount(self):
+        return sum(
+            (item.line_total for item in self.items.all()),
+            start=0,
+        )
+
+
+# ============================================================
+# 11. SALE ITEM MODEL
+# Stores the products and quantities sold on an invoice.
+# ============================================================
+
+class SaleItem(models.Model):
+
+    # The sale this item belongs to.
+    # Deleting a sale also deletes its item records.
+    sale = models.ForeignKey(
+        Sale,
+        on_delete=models.CASCADE,
+        related_name='items',
+    )
+
+    # Product being sold.
+    product = models.ForeignKey(
+        Product,
+        on_delete=models.PROTECT,
+        related_name='sale_items',
+    )
+
+    # Number of units sold.
+    quantity = models.PositiveIntegerField()
+
+    # Selling price per unit recorded for this sale.
+    # This preserves the historical sale price.
+    unit_price = models.DecimalField(
+        max_digits=10,
+        decimal_places=2,
+    )
+
+    # Average cost per unit when this sale is completed.
+    # NULL means the historical cost is not known.
+    unit_cost = models.DecimalField(
+        max_digits=10,
+        decimal_places=2,
+        null=True,
+        blank=True,
+        help_text=(
+            "Average unit cost at sale completion. "
+            "Blank means the historical cost is unknown."
+        ),
+    )
+
+    # Display the product and quantity sold.
+    def __str__(self):
+        return f"{self.product.name} × {self.quantity}"
+
+    # Calculate the total for this individual sale item.
+    @property
+    def line_total(self):
+        return self.quantity * self.unit_price
+
+
+# ============================================================
+# 12. PAYMENT MODEL
+# Records payments made against sales invoices.
+# ============================================================
+
+class Payment(models.Model):
+
+    # Available payment methods.
+    PAYMENT_METHOD_CHOICES = [
+        ('CASH', 'Cash'),
+        ('MOBILE_MONEY', 'Mobile Money'),
+        ('BANK_TRANSFER', 'Bank Transfer'),
+        ('CARD', 'Card'),
+        ('OTHER', 'Other'),
+    ]
+
+    # Invoice associated with this payment.
+    # PROTECT prevents deleting a sale that has payment records.
+    sale = models.ForeignKey(
+        Sale,
+        on_delete=models.PROTECT,
+        related_name='payments',
+    )
+
+    # Amount received from the customer.
+    amount = models.DecimalField(
+        max_digits=10,
+        decimal_places=2,
+    )
+
+    # Method used to make the payment.
+    payment_method = models.CharField(
+        max_length=20,
+        choices=PAYMENT_METHOD_CHOICES,
+    )
+
+    # Optional transaction reference from a payment provider.
+    reference = models.CharField(
+        max_length=100,
+        blank=True,
+    )
+
+    # Additional payment information.
+    notes = models.TextField(blank=True)
+
+    # Automatically record when the payment was entered.
+    received_at = models.DateTimeField(auto_now_add=True)
+
+    created_by = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True, related_name='payments_created',)
+
+    class Meta:
+
+        # Enforce uniqueness for each nonempty reference
+        # within the same payment method.
+        # Blank references are excluded from this constraint.
+        constraints = [
+            models.CheckConstraint(
+                condition=models.Q(amount__gt=0),
+                name='payment_amount_positive',
+            ),
+            models.UniqueConstraint(
+                fields=['payment_method', 'reference'],
+                condition=~Q(reference=''),
+                name='unique_payment_method_reference',
+            ),
+        ]
+
+    # Display the invoice number and payment amount.
+    def __str__(self):
+        return f"{self.sale.invoice_number} - {self.amount}"
+
+
+# ============================================================
+# 13. SALE RETURN MODEL
+# Records an accepted return against a completed sale.
+# ============================================================
+
+class SaleReturn(models.Model):
+    sale = models.ForeignKey(
+        Sale,
+        on_delete=models.PROTECT,
+        related_name='returns',
+    )
+
+    reason = models.TextField()
+
+    created_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='sale_returns_created',
+    )
+
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ['-created_at']
+
+    @property
+    def total_amount(self):
+        return sum(
+            (
+                item.quantity * item.unit_price
+                for item in self.items.all()
+            ),
+            start=Decimal('0.00'),
+        )
+
+    def __str__(self):
+        return f"Return #{self.pk} - {self.sale.invoice_number}"
+
+
+# ============================================================
+# 14. SALE RETURN ITEM MODEL
+# Records the quantity returned for each original sale item.
+# ============================================================
+
+class SaleReturnItem(models.Model):
+    sale_return = models.ForeignKey(
+        SaleReturn,
+        on_delete=models.PROTECT,
+        related_name='items',
+    )
+
+    sale_item = models.ForeignKey(
+        SaleItem,
+        on_delete=models.PROTECT,
+        related_name='return_items',
+    )
+
+    quantity = models.PositiveIntegerField()
+
+    # Snapshot of the original selling price.
+    unit_price = models.DecimalField(
+        max_digits=10,
+        decimal_places=2,
+    )
+
+
+    # Snapshot of the original cost per unit from the sale.
+    # NULL means the historical cost is unknown.
+    unit_cost = models.DecimalField(
+        max_digits=10,
+        decimal_places=2,
+        null=True,
+        blank=True,
+        help_text=(
+            "Original unit cost from the sale. "
+            "Blank means the historical cost is unknown."
+        ),
+    )
+
+
+    # Only resalable, approved items should increase stock.
+    restock = models.BooleanField(default=False)
+
+    class Meta:
+        constraints = [
+            models.CheckConstraint(
+                condition=models.Q(quantity__gt=0),
+                name='sale_return_item_quantity_positive',
+            ),
+            models.CheckConstraint(
+                condition=models.Q(unit_price__gte=0),
+                name='sale_return_item_price_nonnegative',
+            ),
+        ]
+
+    def __str__(self):
+        return (
+            f"{self.sale_item.product.name} "
+            f"× {self.quantity}"
+        )
+
+
+# ============================================================
+# 15. REFUND MODEL
+# Records money refunded against an accepted sale return.
+# ============================================================
+
+class Refund(models.Model):
+    REFUND_METHOD_CHOICES = [
+        ('CASH', 'Cash'),
+        ('MOBILE_MONEY', 'Mobile Money'),
+        ('BANK_TRANSFER', 'Bank Transfer'),
+        ('CARD', 'Card'),
+        ('OTHER', 'Other'),
+    ]
+
+    sale_return = models.ForeignKey(
+        SaleReturn,
+        on_delete=models.PROTECT,
+        related_name='refunds',
+    )
+
+    amount = models.DecimalField(
+        max_digits=10,
+        decimal_places=2,
+    )
+
+    refund_method = models.CharField(
+        max_length=20,
+        choices=REFUND_METHOD_CHOICES,
+    )
+
+    reference = models.CharField(
+        max_length=100,
+        blank=True,
+    )
+
+    notes = models.TextField(blank=True)
+
+    created_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='refunds_created',
+    )
+
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ['-created_at']
+
+        constraints = [
+            models.CheckConstraint(
+                condition=models.Q(amount__gt=0),
+                name='refund_amount_positive',
+            ),
+            models.UniqueConstraint(
+                fields=['refund_method', 'reference'],
+                condition=~models.Q(reference=''),
+                name='unique_refund_method_reference',
+            ),
+        ]
+
+    def __str__(self):
+        return (
+            f"Refund {self.amount} "
+            f"for return #{self.sale_return_id}"
+        )
+
+
+# ============================================================
+# 16. EXPENSE MODEL
+# Records operating expenses incurred by the car-parts shop.
+# Inventory purchases should remain in the Purchase models.
+# ============================================================
+
+class Expense(models.Model):
+
+    # Categories for common shop operating expenses.
+    CATEGORY_CHOICES = [
+        ('RENT', 'Rent'),
+        ('SALARIES', 'Salaries and Wages'),
+        ('UTILITIES', 'Utilities'),
+        ('TRANSPORT', 'Transport'),
+        ('INTERNET', 'Internet and Communication'),
+        ('MAINTENANCE', 'Repairs and Maintenance'),
+        ('MARKETING', 'Marketing and Advertising'),
+        ('BANK_CHARGES', 'Bank and Mobile Money Charges'),
+        ('OTHER', 'Other'),
+    ]
+
+    # How the expense was paid.
+    PAYMENT_METHOD_CHOICES = [
+        ('CASH', 'Cash'),
+        ('MOBILE_MONEY', 'Mobile Money'),
+        ('BANK_TRANSFER', 'Bank Transfer'),
+        ('CARD', 'Card'),
+        ('OTHER', 'Other'),
+    ]
+
+    # Date the expense was incurred.
+    expense_date = models.DateField()
+
+    # Expense category.
+    category = models.CharField(
+        max_length=30,
+        choices=CATEGORY_CHOICES,
+    )
+
+    # Short description explaining the expense.
+    description = models.CharField(max_length=200)
+
+    # Amount spent, recorded to two decimal places.
+    amount = models.DecimalField(
+        max_digits=10,
+        decimal_places=2,
+    )
+
+    # Method used to pay the expense.
+    payment_method = models.CharField(
+        max_length=20,
+        choices=PAYMENT_METHOD_CHOICES,
+    )
+
+    # Optional receipt number or transaction reference.
+    reference = models.CharField(
+        max_length=100,
+        blank=True,
+    )
+
+    # Additional details, if needed.
+    notes = models.TextField(blank=True)
+
+    # Staff member who recorded the expense.
+    created_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='expenses_created',
+    )
+
+    # Record when the expense entry was created or modified.
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ['-expense_date', '-created_at']
+        constraints = [
+            models.CheckConstraint(
+                condition=models.Q(amount__gt=0),
+                name='expense_amount_positive',
+            ),
+        ]
+
+    def __str__(self):
+        return f"{self.description} - {self.amount}"

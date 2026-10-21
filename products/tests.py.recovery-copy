@@ -1,0 +1,109 @@
+
+# ============================================================
+# IMPORTS AND TEST DEPENDENCIES
+# ============================================================
+
+from datetime import date
+from decimal import Decimal
+
+from django.contrib.auth import get_user_model
+from django.contrib.auth.models import Permission
+from django.db import IntegrityError, transaction
+from django.db.models import Sum
+from django.test import TestCase
+from django.urls import reverse
+
+from .models import (
+    Brand,
+    Category,
+    Product,
+    Supplier,
+    Purchase,
+    PurchaseItem,
+    InventoryTransaction,
+    Customer,
+    Sale,
+    SaleItem,
+    Payment,
+    SaleReturn,
+    SaleReturnItem,
+    Refund,
+)
+
+from .services import (
+    adjust_stock,
+    receive_purchase,
+    complete_sale,
+    record_payment,
+    cancel_draft_sale,
+    process_sale_return,
+    record_refund,
+)
+
+
+User = get_user_model()
+
+
+# ============================================================
+# SHARED TEST SETUP
+# Common database records and reusable helper methods
+# ============================================================
+
+class CarPartsTestBase(TestCase):
+    """Create reusable database records and helper methods."""
+
+    def setUp(self):
+        self.brand = Brand.objects.create(
+            name="Toyota Genuine",
+            description="Test brand",
+        )
+
+        self.category = Category.objects.create(
+            name="Engine Parts",
+            description="Test category",
+        )
+
+        self.product = Product.objects.create(
+            name="Oil Filter",
+            part_number="TOY-OF-001",
+            brand=self.brand,
+            category=self.category,
+            cost_price=Decimal("50.00"),
+            selling_price=Decimal("80.00"),
+            quantity=10,
+            minimum_stock=2,
+        )
+
+        self.supplier = Supplier.objects.create(
+            name="Test Auto Supplier",
+            phone="0240000000",
+        )
+
+        self.customer = Customer.objects.create(
+            name="Test Customer",
+            customer_type="INDIVIDUAL",
+            phone="0200000000",
+        )
+
+    def create_sale(self, quantity=2, unit_price="80.00"):
+        """Create a draft sale with one sale item."""
+
+        # Keep the first invoice as INV-TEST-001,
+        # the second as INV-TEST-002, and so on.
+        invoice_number = (
+            f"INV-TEST-{Sale.objects.count() + 1:03d}"
+        )
+
+        sale = Sale.objects.create(
+            customer=self.customer,
+            invoice_number=invoice_number,
+        )
+
+        SaleItem.objects.create(
+            sale=sale,
+            product=self.product,
+            quantity=quantity,
+            unit_price=Decimal(unit_price),
+        )
+
+        return sale

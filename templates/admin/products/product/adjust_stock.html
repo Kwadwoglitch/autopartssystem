@@ -1,0 +1,59 @@
+{% extends "admin/base_site.html" %}
+
+{% block content %}
+<div id="content-main">
+
+    <h1>{{ title }}</h1>
+
+    <div class="module" style="padding: 16px; margin-bottom: 20px;">
+        <h2>Product Details</h2>
+
+        <p>
+            <strong>Product:</strong>
+            {{ product.name }}
+        </p>
+
+        <p>
+            <strong>Part number:</strong>
+            {{ product.part_number }}
+        </p>
+
+        <p>
+            <strong>Current recorded stock:</strong>
+            {{ product.quantity }}
+        </p>
+    </div>
+
+    <div class="module" style="padding: 16px;">
+        <h2>Adjust Physical Stock</h2>
+
+        <p>
+            Enter the actual quantity counted in the store.
+            The system will record the difference in inventory history.
+        </p>
+
+        <form method="post">
+            {% csrf_token %}
+
+            {{ form.non_field_errors }}
+            {{ form.as_p }}
+
+            <div class="submit-row">
+                <input
+                    type="submit"
+                    value="Save stock adjustment"
+                    class="default"
+                >
+
+                <a
+                    href="{% url 'admin:products_product_changelist' %}"
+                    class="closelink"
+                >
+                    Cancel
+                </a>
+            </div>
+        </form>
+    </div>
+
+</div>
+{% endblock %}
